@@ -455,93 +455,81 @@ function processFile(file) {
 
 async function generateInsights(data) {
   const body = document.getElementById('insightsBody');
-  body.innerHTML = '<div class="ins-loading"><div class="ins-dots"><span></span><span></span><span></span></div>Analisando os dados...</div>';
 
   const totRec = data.reduce((a,d)=>a+d.recSemana,0);
   const totAte = data.reduce((a,d)=>a+d.ateSemana,0);
-  const totMes = data.reduce((a,d)=>a+d.recMes,0);
   const taxaGeral = totRec>0 ? Math.round((totAte/totRec)*100) : 0;
 
-  const rows = data.map(d=>{
-    const taxaSem = d.recSemana>0 ? Math.round((d.ateSemana/d.recSemana)*100) : null;
-    const varSem = d.recSemanaAnt>0 ? Math.round(((d.recSemana-d.recSemanaAnt)/d.recSemanaAnt)*100) : null;
-    const taxaMes = d.recMes>0 ? Math.round((d.ateMes/d.recMes)*100) : null;
-    return `- ${d.empresa} | Saúde: ${d.saude} | Rec.semana: ${d.recSemana} | Ate.semana: ${d.ateSemana} | Taxa semana: ${taxaSem!==null?taxaSem+'%':'sem dados'} | Variação vs semana passada: ${varSem!==null?(varSem>0?'+':'')+varSem+'%':'sem dados'} | Taxa mês ant.: ${taxaMes!==null?taxaMes+'%':'sem dados'}`;
-  }).join('\n');
+  const churn = data.filter(d=>d.saude.includes('RISCO')||d.saude.includes('CHURN'));
+  const atencao = data.filter(d=>d.saude.includes('REQUER')||d.saude.includes('ATEN'));
+  const ok = data.filter(d=>d.saude.includes('OK')&&!d.saude.includes('REQUER')&&!d.saude.includes('RISCO'));
+  const baixoUso = data.filter(d=>d.saude.includes('BAIXO')||d.saude.includes('USO'));
 
-  const prompt = `Você é um analista de customer success especializado em empresas SaaS de atendimento via IA. Analise os dados abaixo e escreva uma conclusão narrativa profissional em português brasileiro para um relatório executivo.
+  const cresceram = data.filter(d=>d.recSemanaAnt>0&&d.recSemana>d.recSemanaAnt*1.1);
+  const cairam = data.filter(d=>d.recSemanaAnt>0&&d.recSemana<d.recSemanaAnt*0.7);
+  const semAtendimento = data.filter(d=>d.recSemana>0&&d.ateSemana===0);
+  const baixaTaxa = data.filter(d=>d.recSemana>5&&(d.ateSemana/d.recSemana)<0.7);
+  const topVol = [...data].sort((a,b)=>b.recSemana-a.recSemana).slice(0,3).filter(d=>d.recSemana>0);
 
-DADOS GERAIS:
-- Total de empresas: ${data.length}
-- Mensagens recebidas esta semana: ${totRec}
-- Mensagens atendidas esta semana: ${totAte} (taxa: ${taxaGeral}%)
-- Mensagens recebidas no mês passado: ${totMes}
+  const paragrafos = [];
 
-DADOS POR EMPRESA:
-${rows}
+  // Parágrafo 1 — visão geral
+  let p1 = `Esta semana foram recebidas ${totRec.toLocaleString('pt-BR')} mensagens no total, com uma taxa geral de atendimento de ${taxaGeral}%.`;
+  if (taxaGeral >= 90) p1 += ` O desempenho geral está excelente.`;
+  else if (taxaGeral >= 75) p1 += ` O desempenho geral está satisfatório, mas há espaço para melhora.`;
+  else p1 += ` O desempenho geral está abaixo do esperado e requer atenção imediata.`;
+  if (topVol.length > 0) p1 += ` As empresas com maior volume de mensagens são ${topVol.map(d=>d.empresa).join(', ')}.`;
+  paragrafos.push(p1);
 
-INSTRUÇÕES:
-- Escreva em parágrafos corridos, tom profissional mas direto
-- Destaque os pontos mais críticos (empresas em risco de churn, quedas bruscas de volume, baixas taxas de atendimento)
-- Mencione pontos positivos também (empresas performando bem, crescimento de volume)
-- Sugira 2-3 ações prioritárias concretas para a equipe
-- Não use markdown, bullets ou títulos — apenas parágrafos de texto
-- Máximo 4 parágrafos no total
-- Seja específico, cite os nomes das empresas mais relevantes`;
-
-  try {
-    const resp = await fetch('/api/insights', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ prompt })
-    });
-
-    if (!resp.ok) throw new Error(`Erro na API: ${resp.status}`);
-
-    body.innerHTML = '<div class="ins-body" id="insightsText"></div>';
-    const textEl = document.getElementById('insightsText');
-    let fullText = '';
-    let currentParagraph = '';
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6);
-        if (data === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed?.delta?.text || '';
-          if (!delta) continue;
-          fullText += delta;
-          const paragraphs = fullText.split('\n\n');
-          let html = '';
-          for (let i=0; i<paragraphs.length; i++) {
-            const p = paragraphs[i].trim();
-            if (!p) continue;
-            if (i < paragraphs.length-1) {
-              html += `<p>${p}</p>`;
-            } else {
-              html += `<p>${p}<span class="ins-cursor"></span></p>`;
-            }
-          }
-          textEl.innerHTML = html;
-        } catch(e) {}
-      }
-    }
-
-    const paragraphs = fullText.split('\n\n').filter(p=>p.trim());
-    textEl.innerHTML = paragraphs.map(p=>`<p>${p.trim()}</p>`).join('');
-
-  } catch(err) {
-    body.innerHTML = `<div class="ins-error">Não foi possível gerar os insights: ${err.message}</div>`;
+  // Parágrafo 2 — alertas críticos
+  let p2 = '';
+  if (churn.length > 0) {
+    p2 += `${churn.length === 1 ? 'A empresa' : 'As empresas'} ${churn.map(d=>d.empresa).join(', ')} ${churn.length === 1 ? 'está' : 'estão'} em risco de churn e precisam de contato urgente.`;
   }
+  if (semAtendimento.length > 0) {
+    p2 += (p2?' ':'') + `${semAtendimento.map(d=>d.empresa).join(', ')} ${semAtendimento.length===1?'recebeu mensagens mas não atendeu nenhuma':'receberam mensagens mas não atenderam nenhuma'} nesta semana.`;
+  }
+  if (baixaTaxa.length > 0) {
+    p2 += (p2?' ':'') + `${baixaTaxa.map(d=>d.empresa).join(', ')} ${baixaTaxa.length===1?'está com taxa de atendimento abaixo de 70%':'estão com taxa de atendimento abaixo de 70%'}.`;
+  }
+  if (atencao.length > 0) {
+    p2 += (p2?' ':'') + `Outras ${atencao.length} ${atencao.length===1?'empresa requer atenção':'empresas requerem atenção'}: ${atencao.map(d=>d.empresa).join(', ')}.`;
+  }
+  if (p2) paragrafos.push(p2);
+
+  // Parágrafo 3 — variações semanais
+  let p3 = '';
+  if (cresceram.length > 0) {
+    const nomes = cresceram.map(d=>{
+      const var_ = Math.round(((d.recSemana-d.recSemanaAnt)/d.recSemanaAnt)*100);
+      return `${d.empresa} (+${var_}%)`;
+    });
+    p3 += `Houve crescimento de volume em ${nomes.join(', ')}.`;
+  }
+  if (cairam.length > 0) {
+    const nomes = cairam.map(d=>{
+      const var_ = Math.round(((d.recSemana-d.recSemanaAnt)/d.recSemanaAnt)*100);
+      return `${d.empresa} (${var_}%)`;
+    });
+    p3 += (p3?' ':'') + `Queda significativa de volume em ${nomes.join(', ')}.`;
+  }
+  if (ok.length > 0) {
+    p3 += (p3?' ':'') + `${ok.length} ${ok.length===1?'empresa está':'empresas estão'} com saúde OK: ${ok.map(d=>d.empresa).join(', ')}.`;
+  }
+  if (p3) paragrafos.push(p3);
+
+  // Parágrafo 4 — recomendações
+  const acoes = [];
+  if (churn.length > 0) acoes.push(`entrar em contato com ${churn.map(d=>d.empresa).join(' e ')} para entender a queda no engajamento`);
+  if (baixaTaxa.length > 0) acoes.push(`revisar a configuração do agente em ${baixaTaxa.map(d=>d.empresa).join(' e ')} para melhorar a taxa de atendimento`);
+  if (baixoUso.length > 0) acoes.push(`acompanhar de perto ${baixoUso.map(d=>d.empresa).join(' e ')}, que apresentam baixo uso da plataforma`);
+  if (cairam.length > 0 && !churn.find(d=>cairam.find(c=>c.empresa===d.empresa))) acoes.push(`investigar a queda de volume em ${cairam.map(d=>d.empresa).join(' e ')}`);
+
+  if (acoes.length > 0) {
+    paragrafos.push(`Recomendações para esta semana: ${acoes.slice(0,3).map((a,i)=>`(${i+1}) ${a}`).join('; ')}.`);
+  }
+
+  body.innerHTML = paragrafos.map(p=>`<p>${p}</p>`).join('');
 }
 
 function exportPDF() {
